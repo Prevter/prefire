@@ -1,0 +1,106 @@
+<html lang="en">
+<head>
+    <title>Home - Prefire</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="theme-color" content="#121212"/>
+    <meta name="description" content="Simple file sharing service"/>
+    <meta charset="utf-8"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="/style.css"/>
+    <script src="/index.js" defer></script>
+    <script src="/upload.js" defer></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"
+          integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg=="
+          crossorigin="anonymous" referrerpolicy="no-referrer"/>
+    <link rel="icon" href="/img/prefire.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="py-3 px-2">
+    <div class="d-flex justify-content-between">
+        <div style="width: 2.5rem"></div>
+        <div class="text-center d-flex">
+            <h1 class="h3 my-auto">
+                <a href="/" class="text-decoration-none text-body">
+                    <img src="/img/prefire.svg" width="32" class="img-fluid logo" alt="Prefire Logo"/>
+                    Prefire
+                </a>
+            </h1>
+        </div>
+        <div style="width: 2.5rem">
+            <button class="btn btn-circle" onclick="toggleDarkMode()">
+                <i class="fas fa-moon"></i>
+            </button>
+        </div>
+    </div>
+</header>
+
+<label for="fileInput" class="drop-container mx-3" id="dropcontainer">
+    <input type="file" id="fileInput" class="d-none" required>
+
+    <span class="drop-title">
+        <i class="fas fa-cloud-upload-alt"></i>
+        Drop file here
+    </span>
+    or
+    <button class="btn btn-primary" onclick="fileInput.click()">
+        <i class="fas fa-folder"></i>
+        Browse
+    </button>
+    <button class="btn btn-primary d-none" onclick="upload()" id="uploadButton">
+        <i class="fas fa-upload"></i>
+        Upload
+    </button>
+</label>
+
+<div class="d-none mx-3 confirm-dialog" id="confirmDialog">
+    <div class="card">
+        <div class="card-header">
+            <i class="fas fa-exclamation-triangle"></i>
+            Confirm Upload
+        </div>
+        <div class="card-body">
+            <span class="h5" id="dropfilename"></span>
+            <p class="text-muted" id="fileStats"></p>
+
+            <button class="btn btn-secondary" onclick="cancelFile()">
+                <i class="fas fa-times"></i>
+                Cancel
+            </button>
+
+            <button class="btn btn-primary" onclick="upload()">
+                <i class="fas fa-upload"></i>
+                Upload
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="mx-3 confirm-dialog d-none" id="uploadDialog">
+    <div class="card w-75 w-md-100">
+        <div class="card-header">
+            <i class="fas fa-exclamation-triangle"></i>
+            Uploading "<span id="filenameUploading"></span>"
+        </div>
+        <div class="card-body">
+            <div class="progress">
+                <div class="progress-bar" role="progressbar" style="width: 0%" id="uploadProgress"></div>
+            </div>
+            <p class="text-muted my-2 mb-0" id="uploadStats"></p>
+
+            <button class="btn btn-secondary" onclick="cancelFile()">
+                <i class="fas fa-times"></i>
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
+
+<footer class="py-3 d-flex justify-content-center">
+    <p class="text-center text-muted my-auto">
+        © 2025 <b>Prefire</b>. All Rights Reserved.
+    </p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

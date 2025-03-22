@@ -1,0 +1,4 @@
+/target
+/uploads
+.idea/
+database.sqlite
