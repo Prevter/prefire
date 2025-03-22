@@ -74,7 +74,8 @@ function upload() {
     updateStats(0, 0, file.size, 0, "Calculating...");
 
     const url = new URL(window.location.href);
-    ws = new WebSocket(`ws://${url.host}/upload`);
+    const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${wsProtocol}//${url.host}/upload`);
     ws.binaryType = "arraybuffer";
 
     let hasStarted = false;
