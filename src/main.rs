@@ -1,18 +1,21 @@
 #[macro_use]
 extern crate rocket;
 
-use std::ops::DerefMut;
-use std::path::PathBuf;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use rocket::form::Form;
 use rocket::fs::NamedFile;
 use rocket::futures::{SinkExt, StreamExt};
-use rocket::http::{ContentType, Header, Status};
-use rocket::response::{content, Responder};
-use rocket::{response, tokio};
+use rocket::http::{ContentType, Cookie, CookieJar, Header, Status};
+use rocket::response::{Redirect, Responder, content};
 use rocket::tokio::fs;
-use rocket::tokio::io::{AsyncWriteExt};
+use rocket::tokio::io::AsyncWriteExt;
+use rocket::{response, tokio};
 use rocket_db_pools::sqlx::{self, Row};
 use rocket_db_pools::{Connection, Database};
 use rocket_dyn_templates::{Template, context};
+use std::ops::DerefMut;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 /// == Database == ///
@@ -104,9 +107,11 @@ fn format_date(date: i64) -> String {
     }
 }
 
+#[derive(serde::Serialize)]
 struct FileInfo {
     id: i64,
     name: String,
+    stored_name: String,
     size: i64,
     file_type: String,
     created_at: String,
@@ -122,6 +127,7 @@ async fn get_file_info(db: &mut Connection<Files>, id: &str) -> Option<FileInfo>
     Some(FileInfo {
         id: row.get("id"),
         name: row.get("name"),
+        stored_name: row.get("stored_name"),
         size: row.get("size"),
         file_type: row.get("type"),
         created_at: row.get("created_at"),
@@ -167,10 +173,22 @@ async fn check_hash(db: &mut Connection<Files>, hash: &str, is_sha256: bool) -> 
 fn get_preview_code(file_type: &str, id: &str, name: &str) -> String {
     // get a preview HTML code for the file type
     match file_type.split('/').next().unwrap() {
-        "image" => format!("<img src=\"/f/{id}/preview\" alt=\"{name}\" class=\"preview\">", id = id, name = name),
-        "audio" => format!("<audio controls class=\"preview\"><source src=\"/f/{id}/preview\" type=\"{file_type}\"></audio>", id = id, file_type = file_type),
-        "video" => format!("<video controls class=\"preview\"><source src=\"/f/{id}/preview\" type=\"{file_type}\"></video>", id = id, file_type = file_type),
-        _ => "".to_string()
+        "image" => format!(
+            "<img src=\"/f/{id}/preview\" alt=\"{name}\" class=\"preview\">",
+            id = id,
+            name = name
+        ),
+        "audio" => format!(
+            "<audio controls class=\"preview\"><source src=\"/f/{id}/preview\" type=\"{file_type}\"></audio>",
+            id = id,
+            file_type = file_type
+        ),
+        "video" => format!(
+            "<video controls class=\"preview\"><source src=\"/f/{id}/preview\" type=\"{file_type}\"></video>",
+            id = id,
+            file_type = file_type
+        ),
+        _ => "".to_string(),
     }
 }
 
@@ -200,7 +218,9 @@ async fn file_download(mut db: Connection<Files>, id: &str) -> Result<FileWithHe
     increment_file_downloads(db, file_info.id).await;
 
     let file_path = PathBuf::from(format!("uploads/{}", id));
-    let named_file = NamedFile::open(&file_path).await.map_err(|_| Status::NotFound)?;
+    let named_file = NamedFile::open(&file_path)
+        .await
+        .map_err(|_| Status::NotFound)?;
 
     // Build a response with a custom header
     let response = FileWithHeaders {
@@ -216,7 +236,9 @@ async fn file_download(mut db: Connection<Files>, id: &str) -> Result<FileWithHe
 async fn file_preview(mut db: Connection<Files>, id: &str) -> Result<FileWithHeaders, Status> {
     let file_info = get_file_info(&mut db, id).await.ok_or(Status::NotFound)?;
     let file_path = PathBuf::from(format!("uploads/{}", id));
-    let named_file = NamedFile::open(&file_path).await.map_err(|_| Status::NotFound)?;
+    let named_file = NamedFile::open(&file_path)
+        .await
+        .map_err(|_| Status::NotFound)?;
 
     // Build a response with a custom header
     let response = FileWithHeaders {
@@ -246,8 +268,8 @@ async fn file_overview(mut db: Connection<Files>, id: &str) -> Template {
                     downloads: get_file_downloads(db, file_info.id).await.unwrap_or(0),
                 },
             )
-        },
-        None => Template::render("missing", context! {})
+        }
+        None => Template::render("missing", context! {}),
     }
 }
 
@@ -346,8 +368,96 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
     })
 }
 
+/// == Admin == ///
+
+fn verify_admin_cookie(cookie_jar: &CookieJar<'_>) -> bool {
+    let admin_cookie = cookie_jar.get("admin");
+    if admin_cookie.is_some() {
+        let auth_secret = std::env::var("ADMIN_COOKIE").unwrap();
+        return admin_cookie.unwrap().value() == auth_secret;
+    }
+    false
+}
+
+#[derive(FromForm)]
+struct LoginInput<'r> {
+    username: &'r str,
+    password: &'r str,
+}
+
+#[post("/admin", data = "<login_input>")]
+fn login(login_input: Form<LoginInput<'_>>, cookie_jar: &CookieJar<'_>) -> Redirect {
+    let auth_secret = STANDARD_NO_PAD
+        .encode(format!("{}:{}", login_input.username, login_input.password).as_bytes());
+    cookie_jar.add(Cookie::new("admin", auth_secret));
+    Redirect::to(uri!(admin))
+}
+
+#[get("/d/<id>")]
+async fn delete_file(mut db: Connection<Files>, id: &str, cookie_jar: &CookieJar<'_>) -> Redirect {
+    if !verify_admin_cookie(cookie_jar) {
+        return Redirect::to(uri!(admin));
+    }
+
+    let file_id: i64 = sqlx::query("SELECT id FROM files WHERE stored_name = ?")
+        .bind(id)
+        .fetch_one(&mut **db)
+        .await
+        .unwrap()
+        .get("id");
+
+    let file_path = PathBuf::from(format!("uploads/{}", id));
+    tokio::fs::remove_file(file_path).await.unwrap_or_default();
+    sqlx::query("DELETE FROM downloads WHERE file_id = ?")
+        .bind(file_id)
+        .execute(&mut **db)
+        .await
+        .unwrap_or_default();
+    sqlx::query("DELETE FROM files WHERE stored_name = ?")
+        .bind(id)
+        .execute(&mut **db)
+        .await
+        .unwrap_or_default();
+
+    Redirect::to(uri!(admin))
+}
+
+#[get("/admin")]
+async fn admin(mut db: Connection<Files>, cookie_jar: &CookieJar<'_>) -> Template {
+    if !verify_admin_cookie(cookie_jar) {
+        return Template::render("login", context! {});
+    }
+
+    let files = sqlx::query("SELECT * FROM files")
+        .fetch_all(&mut **db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| FileInfo {
+            id: row.get("id"),
+            name: row.get("name"),
+            stored_name: row.get("stored_name"),
+            size: row.get("size"),
+            file_type: row.get("type"),
+            created_at: row.get("created_at"),
+            sha256: row.get("sha256"),
+        })
+        .collect::<Vec<_>>();
+    Template::render(
+        "admin",
+        context! {
+            files: files,
+        },
+    )
+}
+
 #[launch]
 fn rocket() -> _ {
+    // check if ADMIN_COOKIE is set
+    if std::env::var("ADMIN_COOKIE").is_err() {
+        panic!("ADMIN_COOKIE environment variable is not set");
+    }
+    
     rocket::build()
         .attach(Files::init())
         .attach(Template::fairing())
@@ -363,6 +473,9 @@ fn rocket() -> _ {
                 file_download,
                 file_preview,
                 file_overview,
+                admin,
+                login,
+                delete_file,
             ],
         )
 }

@@ -1434,6 +1434,7 @@ dependencies = [
 name = "prefire"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "crc32fast",
  "mime_guess",
@@ -1441,6 +1442,7 @@ dependencies = [
  "rocket_db_pools",
  "rocket_dyn_templates",
  "rocket_ws",
+ "serde",
  "sha2",
  "uuid",
 ]
