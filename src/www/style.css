@@ -62,7 +62,7 @@ html, body {
     position: relative;
     display: flex;
     gap: 10px;
-    height: calc(100svh - 130px);
+    height: calc(100svh - 155px);
     flex-direction: column;
     justify-content: center;
     align-items: center;
@@ -82,7 +82,7 @@ html, body {
     position: relative;
     display: flex;
     gap: 10px;
-    height: calc(100svh - 130px);
+    height: calc(100svh - 155px);
     flex-direction: column;
     justify-content: center;
     align-items: center;

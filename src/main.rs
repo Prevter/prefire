@@ -45,6 +45,16 @@ fn prefire_logo() -> (ContentType, &'static [u8]) {
     (ContentType::SVG, include_bytes!("www/img/prefire.svg"))
 }
 
+#[get("/privacy")]
+fn privacy() -> content::RawHtml<&'static str> {
+    content::RawHtml(include_str!("www/privacy.html"))
+}
+
+#[get("/terms")]
+fn terms() -> content::RawHtml<&'static str> {
+    content::RawHtml(include_str!("www/terms.html"))
+}
+
 #[get("/")]
 fn index() -> content::RawHtml<&'static str> {
     content::RawHtml(include_str!("www/index.html"))
@@ -476,6 +486,8 @@ fn rocket() -> _ {
                 admin,
                 login,
                 delete_file,
+                privacy,
+                terms,
             ],
         )
 }
