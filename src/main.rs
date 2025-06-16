@@ -310,7 +310,7 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
             // get the file hash
             let blake3_hash = hasher.finalize().to_hex().to_string();
 
-            // check if CRC32 hash already exists
+            // check if the file already exists in the database by comparing the hash
             if let Some(id) = check_hash(&mut db, &blake3_hash).await {
                 // delete the file if it already exists
                 tokio::fs::remove_file(filename).await.unwrap();

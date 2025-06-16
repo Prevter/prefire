@@ -46,6 +46,36 @@ fileInput.addEventListener("change", () => {
     checkFile();
 });
 
+window.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+        if (item.kind === "file") {
+            const file = item.getAsFile();
+            if (file) {
+                console.log("Pasted file:", file);
+                let filename = file.name;
+
+                // rename generic filenames
+                if (!filename || filename === "image.png" || filename.startsWith("blob")) {
+                    const ext = file.type.split("/")[1] || "bin";
+                    filename = `pasted_${Date.now()}.${ext}`;
+                }
+
+                const renamedFile = new File([file], filename, { type: file.type });
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(renamedFile);
+                fileInput.files = dataTransfer.files;
+
+                setDropTitle();
+                checkFile();
+                break;
+            }
+        }
+    }
+});
+
 function cancelFile() {
     if (ws) ws.close();
     fileInput.value = "";
