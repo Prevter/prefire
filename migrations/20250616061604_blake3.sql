@@ -31,5 +31,5 @@ INSERT INTO downloads (file_id, count)
 SELECT file_id, count FROM downloads_old;
 
 -- 7. drop old tables
-DROP TABLE files_old;
 DROP TABLE downloads_old;
+DROP TABLE files_old;
