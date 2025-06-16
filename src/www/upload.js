@@ -11,9 +11,11 @@ const uploadStats = document.getElementById("uploadStats");
 const uploadProgress = document.getElementById("uploadProgress");
 const uploadDialog = document.getElementById("uploadDialog");
 
-const chunkSize = 9 * 1024 * 1024; // 9MB chunks
+const chunkSize = 2 * 1024 * 1024; // 2MB chunks
+const ACK_EVERY = 4;
 let fileId = null;
 let ws = null;
+let awaitingAck = false;
 
 const setDropTitle = () => {
     dropTitle.innerText = fileInput.files[0].name;
@@ -92,6 +94,7 @@ window.addEventListener("paste", (e) => {
 function cancelFile() {
     if (ws) ws.close();
     fileInput.value = "";
+    awaitingAck = false; // Reset global state
     checkFile();
     uploadDialog.classList.add("d-none");
 }
@@ -125,13 +128,17 @@ function upload() {
 
     ws.onmessage = (event) => {
         const data = new Uint8Array(event.data);
-        if (data[0] === 0) {
+        if (data[0] === 0 && !hasStarted) {
             // first packet confirms the upload
             hasStarted = true;
+            awaitingAck = false; // Reset ack flag
             sendChunks(file);
             console.log("Upload confirmed by server");
-        } else if (hasStarted) {
-            // second packet contains the file ID, so we read it as guid string
+        } else if (data[0] === 1 && hasStarted) {
+            // acknowledgment packet - server is ready for next chunk
+            awaitingAck = false;
+        } else if (hasStarted && !awaitingAck) {
+            // final packet contains the file ID
             ws.close();
             fileId = new TextDecoder().decode(data);
             window.location.href = `/f/${fileId}`;
@@ -158,46 +165,97 @@ function upload() {
     };
 
     ws.onerror = (error) => console.error("WebSocket error:", error);
+
+    // Add connection timeout
+    setTimeout(() => {
+        if (!hasStarted && ws.readyState === WebSocket.OPEN) {
+            console.error("Upload timeout - server didn't respond");
+            ws.close();
+            cancelFile();
+        }
+    }, 30000); // 30 second timeout
 }
 
-function sendChunks(file) {
+async function sendChunks(file) {
     const fileSize = file.size;
     const chunkCount = Math.ceil(fileSize / chunkSize);
 
     let chunkIndex = 0;
     let uploaded = 0;
-    let lastUploaded = 0;
-    let lastUpdate = Date.now();
+    let actualSent = 0; // Track actual bytes sent over network
+    let startTime = Date.now();
+    let lastSpeedCheck = Date.now();
     let speed = 0;
     let remaining = 0;
 
     const statsUpdateInterval = setInterval(() => {
-        const remainingSeconds = padZero(Math.floor(remaining / 1000) % 60);
-        const remainingMinutes = padZero(Math.floor(remaining / 60000) % 60);
-        const remainingHours = padZero(Math.floor(remaining / 3600000));
-        updateStats((uploaded / fileSize) * 100, uploaded, fileSize, speed, `${remainingHours}:${remainingMinutes}:${remainingSeconds} remaining`);
+        // Calculate speed based on actual sent data
+        const now = Date.now();
+        const timeDelta = (now - startTime) / 1000; // seconds
+        if (timeDelta > 0) {
+            speed = actualSent / timeDelta;
+        }
+
+        const remainingBytes = fileSize - actualSent;
+        const remainingTime = speed > 0 ? (remainingBytes / speed) * 1000 : 0;
+
+        const remainingSeconds = padZero(Math.floor(remainingTime / 1000) % 60);
+        const remainingMinutes = padZero(Math.floor(remainingTime / 60000) % 60);
+        const remainingHours = padZero(Math.floor(remainingTime / 3600000));
+
+        updateStats(
+            (actualSent / fileSize) * 100,
+            actualSent,
+            fileSize,
+            speed,
+            `${remainingHours}:${remainingMinutes}:${remainingSeconds} remaining`
+        );
     }, 500);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-        const chunk = reader.result;
-        ws.send(chunk);
-        uploaded += chunk.byteLength;
-        chunkIndex++;
-        const now = Date.now();
-        const delta = now - lastUpdate;
-        speed = (uploaded - lastUploaded) / delta * 1000;
-        remaining = (fileSize - uploaded) / speed * 1000;
-        lastUpdate = now;
-        lastUploaded = uploaded;
-        if (chunkIndex < chunkCount) {
-            reader.readAsArrayBuffer(file.slice(chunkIndex * chunkSize, (chunkIndex + 1) * chunkSize));
-        } else {
+    const sendNextChunk = () => {
+        if (chunkIndex >= chunkCount) {
             clearInterval(statsUpdateInterval);
             updateStats(100, fileSize, fileSize, 0, "Saving your file...");
+            return;
         }
+
+        if (awaitingAck) {
+            setTimeout(sendNextChunk, 10);
+            return;
+        }
+
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(start + chunkSize, fileSize);
+        const chunk = file.slice(start, end);
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (ws.readyState === WebSocket.OPEN) {
+                const chunkData = reader.result;
+
+                // Send and track when actually sent
+                ws.send(chunkData);
+
+                // Update counters
+                uploaded += chunk.size; // File reading progress
+                actualSent += chunkData.byteLength; // Actual network transmission
+                chunkIndex++;
+
+                // Set awaiting acknowledgment flag
+                awaitingAck = ((chunkIndex - 1) % ACK_EVERY === 0);
+
+                setTimeout(sendNextChunk, 5);
+            }
+        };
+
+        reader.onerror = () => {
+            console.error("Error reading file chunk");
+            ws.close();
+            cancelFile();
+        };
+
+        reader.readAsArrayBuffer(chunk);
     };
 
-    reader.readAsArrayBuffer(file.slice(0, chunkSize));
+    sendNextChunk();
 }
-

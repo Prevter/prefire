@@ -281,31 +281,54 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
             // open a file stream
             let id = Uuid::new_v4().to_string().replace("-", "");
             let filename = format!("uploads/{}", id);
-            let file = fs::File::create(&filename).await.unwrap();
-            let mut file = tokio::io::BufWriter::new(file);
 
             // send a message to the client to start sending chunks
             stream.send(vec![0].into()).await.unwrap();
 
             // write chunks to file
+            let buf_size = 32 * 1024 * 1024;
+            let file = fs::File::create(&filename).await.unwrap();
+            let mut file = tokio::io::BufWriter::with_capacity(buf_size, file);
+
             let mut hasher = Hasher::new();
-            for _ in 0..chunks {
-                let chunk = match stream.next().await {
-                    Some(Ok(message)) => message.into_data(),
+            const ACK_EVERY: u64 = 4;
+            for i in 0..chunks {
+
+                // add timeout to prevent hanging
+                let chunk = match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    stream.next()
+                ).await {
+                    Ok(Some(Ok(message))) => message.into_data(),
                     _ => {
-                        // if the stream ends early, delete the file
-                        tokio::fs::remove_file(filename).await.unwrap();
+                        // if the stream ends early or times out, delete the file
+                        let _ = tokio::fs::remove_file(&filename).await;
                         return Ok(());
                     }
                 };
-                file.write_all(&chunk).await.unwrap();
+
+                // write chunk to file
+                if file.write_all(&chunk).await.is_err() {
+                    let _ = tokio::fs::remove_file(&filename).await;
+                    return Ok(());
+                }
 
                 // update the hash
                 hasher.update(&chunk);
+
+                // send a backpressure message to the client
+                if i % ACK_EVERY == 0 && stream.send(vec![1].into()).await.is_err() {
+                    let _ = tokio::fs::remove_file(&filename).await;
+                    return Ok(());
+                }
             }
 
-            // close the file stream
-            file.flush().await.unwrap();
+            // ensure the file is flushed before finalizing
+            if file.flush().await.is_err() {
+                let _ = tokio::fs::remove_file(&filename).await;
+                return Ok(());
+            }
+            drop(file);
 
             // get the file hash
             let blake3_hash = hasher.finalize().to_hex().to_string();
