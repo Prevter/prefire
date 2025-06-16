@@ -3,6 +3,7 @@ const fileInput = document.getElementById("fileInput");
 const dropTitle = document.getElementById("dropfilename");
 const uploadButton = document.getElementById("uploadButton");
 const confirmDialog = document.getElementById("confirmDialog");
+const uploadPreview = document.getElementById("uploadPreview");
 const fileStats = document.getElementById("fileStats");
 
 const uploadFilename = document.getElementById("filenameUploading");
@@ -17,6 +18,19 @@ let ws = null;
 const setDropTitle = () => {
     dropTitle.innerText = fileInput.files[0].name;
     fileStats.innerHTML = `Size: ${bytesToSize(fileInput.files[0].size)}`;
+
+    // update preview if the file is an image
+    const file = fileInput.files[0];
+    if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            uploadPreview.src = e.target.result;
+            uploadPreview.classList.remove("d-none");
+        };
+        reader.readAsDataURL(file);
+    } else {
+        uploadPreview.classList.add("d-none");
+    }
 };
 
 const checkFile = () => {
@@ -54,7 +68,6 @@ window.addEventListener("paste", (e) => {
         if (item.kind === "file") {
             const file = item.getAsFile();
             if (file) {
-                console.log("Pasted file:", file);
                 let filename = file.name;
 
                 // rename generic filenames
