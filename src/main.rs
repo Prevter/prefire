@@ -17,6 +17,7 @@ use rocket_dyn_templates::{Template, context};
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use uuid::Uuid;
+use blake3::Hasher;
 
 /// == Database == ///
 #[derive(Database)]
@@ -61,41 +62,6 @@ fn index() -> content::RawHtml<&'static str> {
 }
 
 /// == File Utilities == ///
-fn get_crc32(file: &str) -> u32 {
-    use crc32fast::Hasher;
-    use std::fs::File;
-    use std::io::{BufReader, Read};
-
-    let mut hasher = Hasher::new();
-    let mut reader = BufReader::new(File::open(file).unwrap());
-    let mut buffer = [0; 1024];
-    loop {
-        let bytes_read = reader.read(&mut buffer).unwrap();
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-    hasher.finalize()
-}
-
-fn get_sha256(file: &str) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fs::File;
-    use std::io::{BufReader, Read};
-
-    let mut hasher = Sha256::new();
-    let mut reader = BufReader::new(File::open(file).unwrap());
-    let mut buffer = [0; 1024];
-    loop {
-        let bytes_read = reader.read(&mut buffer).unwrap();
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-    format!("{:x}", hasher.finalize())
-}
 
 fn format_size(size: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB"];
@@ -125,7 +91,7 @@ struct FileInfo {
     size: i64,
     file_type: String,
     created_at: String,
-    sha256: String,
+    hash: String,
 }
 
 async fn get_file_info(db: &mut Connection<Files>, id: &str) -> Option<FileInfo> {
@@ -141,7 +107,7 @@ async fn get_file_info(db: &mut Connection<Files>, id: &str) -> Option<FileInfo>
         size: row.get("size"),
         file_type: row.get("type"),
         created_at: row.get("created_at"),
-        sha256: row.get("sha256"),
+        hash: row.get("hash"),
     })
 }
 
@@ -163,20 +129,12 @@ async fn increment_file_downloads(mut db: Connection<Files>, id: i64) {
         .unwrap();
 }
 
-async fn check_hash(db: &mut Connection<Files>, hash: &str, is_sha256: bool) -> Option<String> {
-    let row = if is_sha256 {
-        sqlx::query("SELECT stored_name FROM files WHERE sha256 = ?")
-            .bind(hash)
-            .fetch_one(&mut **db.deref_mut())
-            .await
-            .ok()?
-    } else {
-        sqlx::query("SELECT stored_name FROM files WHERE crc32 = ?")
-            .bind(hash)
-            .fetch_one(&mut **db.deref_mut())
-            .await
-            .ok()?
-    };
+async fn check_hash(db: &mut Connection<Files>, hash: &str) -> Option<String> {
+    let row = sqlx::query("SELECT stored_name FROM files WHERE hash = ?")
+        .bind(hash)
+        .fetch_one(&mut **db.deref_mut())
+        .await
+        .ok()?;
     Some(row.get("stored_name"))
 }
 
@@ -218,6 +176,8 @@ impl<'r> Responder<'r, 'static> for FileWithHeaders {
             "Content-Disposition",
             format!("inline; filename=\"{}\"", self.filename),
         ));
+        response.set_header(Header::new("Cache-Control", "public, max-age=31536000"));
+        response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
         Ok(response)
     }
 }
@@ -274,7 +234,7 @@ async fn file_overview(mut db: Connection<Files>, id: &str) -> Template {
                     date: file_info.created_at,
                     preview: preview,
                     filetype: file_info.file_type,
-                    filehash: file_info.sha256,
+                    filehash: file_info.hash,
                     downloads: get_file_downloads(db, file_info.id).await.unwrap_or(0),
                 },
             )
@@ -328,6 +288,7 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
             stream.send(vec![0].into()).await.unwrap();
 
             // write chunks to file
+            let mut hasher = Hasher::new();
             for _ in 0..chunks {
                 let chunk = match stream.next().await {
                     Some(Ok(message)) => message.into_data(),
@@ -338,16 +299,19 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
                     }
                 };
                 file.write_all(&chunk).await.unwrap();
+
+                // update the hash
+                hasher.update(&chunk);
             }
 
             // close the file stream
             file.flush().await.unwrap();
 
             // get the file hash
-            let sha256 = get_sha256(&filename);
+            let blake3_hash = hasher.finalize().to_hex().to_string();
 
             // check if CRC32 hash already exists
-            if let Some(id) = check_hash(&mut db, &sha256.to_string(), true).await {
+            if let Some(id) = check_hash(&mut db, &blake3_hash).await {
                 // delete the file if it already exists
                 tokio::fs::remove_file(filename).await.unwrap();
                 stream.send(id.as_bytes().to_vec().into()).await.unwrap();
@@ -357,15 +321,13 @@ fn upload(mut db: Connection<Files>, ws: ws::WebSocket) -> ws::Channel<'static> 
             // save the file to the database
             let file_type = mime_guess::from_path(&name).first_or_octet_stream().to_string();
             let file_size = fs::metadata(&filename).await.unwrap().len();
-            let crc32 = get_crc32(&filename);
-            sqlx::query("INSERT INTO files(name, stored_name, size, type, created_at, sha256, crc32) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO files(name, stored_name, size, type, created_at, hash) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(name)
                 .bind(&id)
                 .bind(file_size as i64)
                 .bind(file_type)
                 .bind(format_date(chrono::Utc::now().timestamp()))
-                .bind(sha256)
-                .bind(crc32.to_string())
+                .bind(blake3_hash)
                 .execute(&mut **db)
                 .await
                 .unwrap();
@@ -450,7 +412,7 @@ async fn admin(mut db: Connection<Files>, cookie_jar: &CookieJar<'_>) -> Templat
             size: row.get("size"),
             file_type: row.get("type"),
             created_at: row.get("created_at"),
-            sha256: row.get("sha256"),
+            hash: row.get("hash"),
         })
         .collect::<Vec<_>>();
     Template::render(
